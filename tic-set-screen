@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+
+import struct
+import sys
+from io import BytesIO
+
+from PIL import Image
+from ticfile import TICFile, ChunkType, Chunk
+
+args = sys.argv[1:]
+if len(args) != 3:
+    print("tic-set-screen: Replace the cover image of a TIC-80 .tic cartridge file")
+    print("Usage: tic-set-screen input-file.tic cover.png output-file.tic")
+    print("Cover image must be 240x136 and 16 colours.")
+    sys.exit(1)
+
+input_file, cover_file, output_file = args
+
+input_tic = TICFile.open(input_file)
+img = Image.open(cover_file)
+if img.size != (240, 136):
+    print("Error: Image must be 240 x 136")
+    sys.exit(1)
+
+img_rgb = img.convert('RGB')
+palette = [
+    colour for count, colour in img_rgb.getcolors()
+]
+if len(palette) > 16:
+    print("Error: Image must have maximum 16 colours")
+palette_lookup = {
+    rgb: i
+    for i, rgb in enumerate(palette)
+}
+
+# copy the list of chunks to a new list, omitting any existing screen or
+# palette chunks in bank 0
+output_chunks = [
+    chunk for chunk in input_tic.chunks
+    if not (chunk.type in (ChunkType.SCREEN, ChunkType.PALETTE) and chunk.bank == 0)
+]
+
+palette_buffer = BytesIO()
+for i in range(0, 16):
+    try:
+        colour = palette[i]
+    except IndexError:
+        colour = (0, 0, 0)
+    palette_buffer.write(struct.pack("BBB", *colour))
+
+# write a blank OVR palette
+palette_buffer.write(b"\0" * 48)
+
+palette_chunk = Chunk(ChunkType.PALETTE, 0, palette_buffer.getvalue())
+output_chunks.append(palette_chunk)
+
+screen_buffer = BytesIO()
+for y in range(0, 136):
+    for x in range(0, 240, 2):
+        rgb1 = img_rgb.getpixel((x, y))
+        rgb2 = img_rgb.getpixel((x + 1, y))
+        val = palette_lookup[rgb1] | (palette_lookup[rgb2] << 4)
+        screen_buffer.write(bytes([val]))
+
+screen_chunk = Chunk(ChunkType.SCREEN, 0, screen_buffer.getvalue())
+output_chunks.append(screen_chunk)
+
+output_tic = TICFile(output_chunks)
+output_tic.save(output_file)
